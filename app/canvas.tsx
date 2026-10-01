@@ -1,74 +1,71 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import {
-  Tldraw,
-  Editor,
-  TLStoreSnapshot,
-  createTLStore,
-  getSnapshot,
-} from "tldraw";
+import { useSync } from "@tldraw/sync";
+import { Tldraw, Editor, getSnapshot, loadSnapshot } from "tldraw";
+import { CONNECT_URI, SYNC_URL, assetStore, getBookmarkPreview } from "./sync";
 
-const STORAGE_KEY = "unsorted-canvas-v1";
+// Where the pre-sync version kept the board. Read once to offer moving it into the synced board.
+const LEGACY_STORAGE_KEY = "unsorted-canvas-v1";
+const LEGACY_MOVED_KEY = "unsorted-canvas-v1-moved";
 
-function loadSnapshot(): TLStoreSnapshot | undefined {
+const LICENSE_KEY = process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY;
+
+function readStorage(key: string) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return undefined;
-    return JSON.parse(raw);
+    return localStorage.getItem(key);
   } catch {
-    return undefined;
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Storage blocked (private mode etc.) — we'll just ask about the old board again next time.
   }
 }
 
 export default function Canvas() {
-  const editorRef = useRef<Editor | null>(null);
   const [ready, setReady] = useState(false);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     setReady(true);
   }, []);
 
+  if (!ready) return null;
+
+  if (!SYNC_URL) {
+    return (
+      <Gate>
+        <span>NEXT_PUBLIC_SYNC_URL isn&apos;t set, so there&apos;s nowhere to sync to.</span>
+      </Gate>
+    );
+  }
+
+  return <SyncedCanvas />;
+}
+
+function SyncedCanvas() {
+  const editorRef = useRef<Editor | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+
+  const store = useSync({ uri: CONNECT_URI, assets: assetStore });
+
   const handleMount = (editor: Editor) => {
     editorRef.current = editor;
-
-    const previous = loadSnapshot();
-    if (previous) {
-      try {
-        editor.store.loadSnapshot(previous);
-      } catch {
-        localStorage.removeItem(STORAGE_KEY);
-      }
-    }
-
-    const save = () => {
-      try {
-        const snapshot = getSnapshot(editor.store);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
-        setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-      } catch {
-        // Keep the canvas usable even if browser storage is unavailable/full.
-      }
-    };
-
-    const unsubscribe = editor.store.listen(save, { scope: "document", source: "user" });
-    save();
-
-    return () => unsubscribe();
+    editor.registerExternalAssetHandler("url", getBookmarkPreview);
+    offerLegacyBoard(editor);
   };
 
   const clearCanvas = () => {
     const editor = editorRef.current;
     if (!editor) return;
-    if (!window.confirm("Throw everything away? This clears the local canvas.")) return;
+    if (!window.confirm("Throw everything away? This clears the board on every device.")) return;
 
     editor.selectAll();
     editor.deleteShapes(editor.getSelectedShapeIds());
-    localStorage.removeItem(STORAGE_KEY);
-    setSavedAt(null);
   };
 
   const exportCanvas = () => {
@@ -88,19 +85,25 @@ export default function Canvas() {
   const importCanvas = async (file: File) => {
     const editor = editorRef.current;
     if (!editor) return;
+    if (!window.confirm("Replace the board on every device with this backup?")) return;
 
     try {
-      const text = await file.text();
-      const snapshot = JSON.parse(text);
-      editor.store.loadSnapshot(snapshot);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
-      setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      loadSnapshot(editor.store, JSON.parse(await file.text()));
     } catch {
       window.alert("That backup doesn't look like a valid UNSORTED canvas.");
     }
   };
 
-  if (!ready) return null;
+  if (store.status === "error") {
+    return (
+      <Gate>
+        <span>Couldn&apos;t reach the board. The sync server may be down.</span>
+        <div className="gate-actions">
+          <button onClick={() => window.location.reload()}>Try again</button>
+        </div>
+      </Gate>
+    );
+  }
 
   return (
     <main className="app-shell">
@@ -136,15 +139,16 @@ export default function Canvas() {
           <span><kbd>⌘/Ctrl</kbd> + Z · undo</span>
           <span><kbd>⌘/Ctrl</kbd> + Shift + Z · redo</span>
           <span><kbd>Delete</kbd> · delete selection</span>
-          <span>Everything saves locally in this browser.</span>
+          <span>Everything syncs live to anyone who opens the board.</span>
         </aside>
       )}
 
       <section className="canvas">
         <Tldraw
-          persistenceKey="unsorted-tldraw"
+          store={store}
+          licenseKey={LICENSE_KEY}
           onMount={handleMount}
-          inferDarkMode={false}
+          colorScheme="light"
           autoFocus
           components={{
             SharePanel: null,
@@ -160,7 +164,39 @@ export default function Canvas() {
 
       <div className="hint">
         <span>put something here.</span>
-        {savedAt && <span className="saved">saved {savedAt}</span>}
+        {store.status === "synced-remote" && (
+          <span className="saved">{store.connectionStatus === "online" ? "synced" : "offline · reconnecting"}</span>
+        )}
+      </div>
+    </main>
+  );
+}
+
+// The first time a device connects, offer to move its old local-only board into the shared one,
+// but only if the shared board is still empty so nothing gets overwritten.
+function offerLegacyBoard(editor: Editor) {
+  const raw = readStorage(LEGACY_STORAGE_KEY);
+  if (!raw || readStorage(LEGACY_MOVED_KEY)) return;
+
+  const hasShapes = editor.store.allRecords().some((r) => r.typeName === "shape");
+  if (hasShapes) return;
+
+  if (!window.confirm("This device has a board from before syncing. Move it into the synced board?")) return;
+
+  try {
+    loadSnapshot(editor.store, JSON.parse(raw));
+    writeStorage(LEGACY_MOVED_KEY, new Date().toISOString());
+  } catch {
+    window.alert("Couldn't read the old board. It's still saved on this device.");
+  }
+}
+
+function Gate({ children }: { children: React.ReactNode }) {
+  return (
+    <main className="app-shell gate">
+      <div className="gate-card">
+        <div className="brand-name">UNSORTED</div>
+        {children}
       </div>
     </main>
   );

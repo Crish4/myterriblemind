@@ -1,0 +1,25 @@
+name = "unsorted-sync"
+main = "src/worker.ts"
+compatibility_date = "2025-05-08"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[vars]
+# Comma-separated origins allowed to talk to this worker.
+ALLOWED_ORIGINS = "https://myterriblemind.vercel.app,http://localhost:3000"
+
+# One Durable Object per board (room); its state lives in the object's SQLite storage.
+[durable_objects]
+bindings = [{ name = "TLDRAW_DURABLE_OBJECT", class_name = "TldrawDurableObject" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TldrawDurableObject"]
+
+# Images and videos are stored in R2.
+[[r2_buckets]]
+binding = "TLDRAW_BUCKET"
+bucket_name = "unsorted-assets"
+preview_bucket_name = "unsorted-assets-preview"

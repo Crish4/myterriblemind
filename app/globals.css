@@ -166,3 +166,46 @@ kbd {
     right: 13px;
   }
 }
+.gate {
+  display: grid;
+  place-items: center;
+}
+
+.gate-card {
+  width: min(320px, calc(100% - 32px));
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid rgba(20,20,20,.15);
+  background: rgba(255,253,248,.94);
+  box-shadow: 0 12px 40px rgba(0,0,0,.10);
+  font-size: 13px;
+  line-height: 1.4;
+  color: #625e57;
+}
+
+.gate-actions button {
+  padding: 8px 10px;
+  border: 1px solid rgba(20,20,20,.18);
+  background: #151515;
+  color: #fffdf8;
+  cursor: pointer;
+}
+
+.gate-actions {
+  display: flex;
+  gap: 8px;
+}
+
+
+/* Keep tldraw's top panels (undo/redo, style panel) clear of the brand and top-right actions. */
+.canvas .tlui-layout__top {
+  padding-top: 68px;
+}
+
+@media (max-width: 600px) {
+  .canvas .tlui-layout__top {
+    padding-top: 56px;
+  }
+}
